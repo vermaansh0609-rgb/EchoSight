@@ -2,18 +2,19 @@ import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
-from ultralytics import YOLO
-import easyocr
 
 st.set_page_config(page_title="EchoSight Assistive System", layout="centered")
 
+# Lazy load models so the CPU never spikes on initial boot
 @st.cache_resource
-def load_models():
-    seg = YOLO("yolov8n-seg.pt")
-    ocr = easyocr.Reader(["en"], gpu=False)
-    return seg, ocr
+def get_yolo_model():
+    from ultralytics import YOLO
+    return YOLO("yolov8n-seg.pt")
 
-seg_model, ocr_reader = load_models()
+@st.cache_resource
+def get_ocr_reader():
+    import easyocr
+    return easyocr.Reader(["en"], gpu=False)
 
 def detect_floor_dropoff(cv_image):
     height, width = cv_image.shape[:2]
@@ -111,7 +112,7 @@ def analyze_navigation(results, cv_image):
 
     return "Path clear straight ahead."
 
-def identify_currency(cv_img):
+def identify_currency(cv_img, ocr_reader):
     ocr_results = ocr_reader.readtext(cv_img)
     text_corpus = " ".join([entry[1].strip() for entry in ocr_results])
     for denom in ["500", "200", "100", "50", "20", "10"]:
@@ -140,12 +141,14 @@ if img_file is not None:
     cv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
     if mode == "🧭 Navigation":
+        seg_model = get_yolo_model()
         results = seg_model(image, verbose=False)
         alert = analyze_navigation(results, cv_img)
         st.success(f"**Guidance:** {alert}")
         alert_to_speak = alert
 
     elif mode == "📖 Text Reader (OCR)":
+        ocr_reader = get_ocr_reader()
         gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
         ocr_results = ocr_reader.readtext(gray)
         extracted = [e[1].strip() for e in ocr_results if e[2] > 0.25 and len(e[1].strip()) > 1]
@@ -154,7 +157,8 @@ if img_file is not None:
         alert_to_speak = text_out
 
     elif mode == "💵 Currency Identifier":
-        currency_alert = identify_currency(cv_img)
+        ocr_reader = get_ocr_reader()
+        currency_alert = identify_currency(cv_img, ocr_reader)
         st.warning(f"**Banknote Result:** {currency_alert}")
         alert_to_speak = currency_alert
 
