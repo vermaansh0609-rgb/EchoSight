@@ -1,9 +1,6 @@
 streamlit
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
-torchvision
 ultralytics
 easyocr
-pillow<11.0.0
 opencv-python-headless
+pillow<11.0.0
 numpy<2.0.0
