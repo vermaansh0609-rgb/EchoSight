@@ -2,5 +2,5 @@ streamlit
 ultralytics
 easyocr
 opencv-python-headless
-pillow<11.0.0
+Pillow
 numpy<2.0.0
