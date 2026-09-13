@@ -7,8 +7,30 @@ from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 st.set_page_config(page_title="EchoSight Assistive Vision", layout="centered")
 st.title("EchoSight Assistive Vision")
 
+# Robust STUN/TURN configuration to penetrate cloud container firewalls
 RTC_CONFIGURATION = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    {
+        "iceServers": [
+            {"urls": ["stun:stun.l.google.com:19302"]},
+            {"urls": ["stun:stun1.l.google.com:19302"]},
+            {"urls": ["stun:stun2.l.google.com:19302"]},
+            {
+                "urls": ["turn:openrelay.metered.ca:80"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject",
+            },
+            {
+                "urls": ["turn:openrelay.metered.ca:443"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject",
+            },
+            {
+                "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
+                "username": "openrelayproject",
+                "credential": "openrelayproject",
+            },
+        ]
+    }
 )
 
 @st.cache_resource
@@ -103,7 +125,6 @@ def identify_currency(cv_img, ocr_reader):
 
 mode = st.radio("Select Operating Mode:", ["🧭 Navigation", "📖 Text Reader (OCR)", "💵 Currency Identifier"], horizontal=True)
 
-# Shared state between WebRTC frame callbacks
 class VideoProcessor:
     def __init__(self):
         self.frame_count = 0
@@ -113,7 +134,7 @@ class VideoProcessor:
         img = frame.to_ndarray(format="bgr24")
         self.frame_count += 1
 
-        # Run inference once every 6 frames to keep CPU usage minimal
+        # Run inference every 6th frame to minimize CPU usage and prevent throttling
         if self.frame_count % 6 == 0:
             if mode == "🧭 Navigation":
                 seg_model = get_yolo_model()
@@ -131,9 +152,9 @@ class VideoProcessor:
                 ocr = get_ocr_reader()
                 self.latest_text = identify_currency(img, ocr)
 
-        # Draw overlay text directly on live video stream
+        # Visual banner overlay on frame
         cv2.rectangle(img, (10, 10), (img.shape[1] - 10, 60), (0, 0, 0), -1)
-        cv2.putText(img, self.latest_text, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(img, self.latest_text, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
@@ -142,6 +163,13 @@ webrtc_streamer(
     mode=WebRtcMode.SENDRECV,
     rtc_configuration=RTC_CONFIGURATION,
     video_processor_factory=VideoProcessor,
-    media_stream_constraints={"video": True, "audio": False},
-    async_processing=True
+    media_stream_constraints={
+        "video": {
+            "width": {"ideal": 320, "max": 480},
+            "height": {"ideal": 240, "max": 360},
+            "frameRate": {"ideal": 15, "max": 20},
+        },
+        "audio": False,
+    },
+    async_processing=True,
 )
