@@ -1,4 +1,5 @@
 streamlit
+streamlit-webrtc
 ultralytics
 easyocr
 opencv-python-headless
