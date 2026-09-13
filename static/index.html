@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>EchoSight Assistive System</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f1117;
+      color: #f1f5f9;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px;
+      margin: 0;
+    }
+    h1 { margin-bottom: 8px; font-size: 1.6rem; }
+    p.sub { margin-top: 0; color: #94a3b8; font-size: 0.9rem; }
+    video {
+      width: 100%;
+      max-width: 480px;
+      height: auto;
+      border-radius: 12px;
+      background: #1e293b;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+    #badge {
+      margin-top: 14px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      color: #38bdf8;
+      background: #1e293b;
+      padding: 6px 14px;
+      border-radius: 9999px;
+    }
+    .controls {
+      margin-top: 18px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+    }
+    button {
+      padding: 10px 18px;
+      font-weight: 600;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      cursor: pointer;
+      background: #1e293b;
+      color: #38bdf8;
+      transition: background 0.15s ease;
+    }
+    button:hover { background: #334155; }
+    button.active {
+      background: #0284c7;
+      color: #ffffff;
+      border-color: #0284c7;
+    }
+  </style>
+</head>
+<body>
+  <h1>EchoSight AI</h1>
+  <p class="sub">Spatial Sonar • Floor Segmentation • Cash & Text Reader</p>
+  <video id="video" autoplay playsinline muted></video>
+  <div id="badge">Initializing Camera...</div>
+  <div class="controls">
+    <button id="btn-nav" class="active" onclick="setMode('NAVIGATION')">🧭 Navigate (N)</button>
+    <button id="btn-ocr" onclick="setMode('OCR')">📖 Read (R)</button>
+    <button id="btn-cash" onclick="setMode('CURRENCY')">💵 Cash (C)</button>
+  </div>
+
+  <script>
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let activeMode = "NAVIGATION";
+    let isProcessing = false;
+
+    const video = document.getElementById('video');
+    const badge = document.getElementById('badge');
+
+    function updateButtons() {
+      document.getElementById('btn-nav').className = activeMode === 'NAVIGATION' ? 'active' : '';
+      document.getElementById('btn-ocr').className = activeMode === 'OCR' ? 'active' : '';
+      document.getElementById('btn-cash').className = activeMode === 'CURRENCY' ? 'active' : '';
+    }
+
+    function setMode(mode) {
+      activeMode = mode;
+      badge.innerText = `Mode: ${activeMode}`;
+      updateButtons();
+    }
+
+    window.addEventListener('keydown', (e) => {
+      const k = e.key.toUpperCase();
+      if (k === 'N') setMode("NAVIGATION");
+      if (k === 'R') setMode("OCR");
+      if (k === 'C') setMode("CURRENCY");
+    });
+
+    function playSpatialSonar(panVal) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      const pan = audioCtx.createStereoPanner();
+
+      pan.pan.value = Math.max(-1.0, Math.min(1.0, panVal));
+      osc.frequency.setValueAtTime(520, audioCtx.currentTime);
+      gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+
+      osc.connect(gain);
+      gain.connect(pan);
+      pan.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.15);
+    }
+
+    function speakAlert(text) {
+      if (!text || text.trim() === "") return;
+      const isEmergency = text.toLowerCase().startsWith("stop");
+      if (window.speechSynthesis.speaking) {
+        if (isEmergency) window.speechSynthesis.cancel();
+        else return;
+      }
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.rate = 1.15;
+      window.speechSynthesis.speak(utter);
+    }
+
+    navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 }, audio: false })
+      .then(stream => {
+        video.srcObject = stream;
+        setMode("NAVIGATION");
+      })
+      .catch(err => {
+        badge.innerText = "Camera Access Denied";
+      });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 320;
+    canvas.height = 240;
+    const ctx = canvas.getContext('2d');
+
+    setInterval(async () => {
+      if (!video.videoWidth || isProcessing) return;
+      isProcessing = true;
+
+      ctx.drawImage(video, 0, 0, 320, 240);
+      canvas.toBlob(async (blob) => {
+        const formData = new FormData();
+        formData.append("file", blob, "frame.jpg");
+        formData.append("mode", activeMode);
+
+        try {
+          const res = await fetch("/process_frame", { method: "POST", body: formData });
+          const data = await res.json();
+          if (data.beep) playSpatialSonar(data.pan);
+          if (data.alert) speakAlert(data.alert);
+
+          if (activeMode !== "NAVIGATION") setMode("NAVIGATION");
+        } catch (e) {
+          console.error("Frame transmission error:", e);
+        } finally {
+          isProcessing = false;
+        }
+      }, 'image/jpeg', 0.65);
+    }, 600);
+  </script>
+</body>
+</html>
