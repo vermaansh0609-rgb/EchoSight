@@ -1,26 +1,25 @@
-import base64
-import io
+import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from ultralytics import YOLO
 import easyocr
 
-app = FastAPI(title="EchoSight Assistive System")
+st.set_page_config(page_title="EchoSight Assistive System", layout="centered")
 
-# Initialize models (falls back to CPU automatically in free Hugging Face containers)
-seg_model = YOLO("yolov8n-seg.pt")
-ocr_reader = easyocr.Reader(["en"], gpu=False)
+@st.cache_resource
+def load_models():
+    seg = YOLO("yolov8n-seg.pt")
+    ocr = easyocr.Reader(["en"], gpu=False)
+    return seg, ocr
+
+seg_model, ocr_reader = load_models()
 
 def detect_floor_dropoff(cv_image):
     height, width = cv_image.shape[:2]
     floor_roi = cv_image[int(height * 0.70):height, :]
     gray = cv2.cvtColor(floor_roi, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
     edges = cv2.Canny(blurred, 50, 150)
     lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=40, minLineLength=50, maxLineGap=15)
 
@@ -34,10 +33,8 @@ def detect_floor_dropoff(cv_image):
             angle = np.abs(np.arctan2(y2 - y1, x2 - x1) * 180.0 / np.pi)
             if angle < 20 or angle > 160:
                 horizontal_line_count += 1
-
         if horizontal_line_count >= 3:
             return True, "Warning: drop-off or steps ahead."
-            
     return False, ""
 
 def compute_walkable_corridor(results, cv_image):
@@ -68,7 +65,7 @@ def compute_walkable_corridor(results, cv_image):
 def analyze_navigation(results, cv_image):
     is_dropoff, dropoff_msg = detect_floor_dropoff(cv_image)
     if is_dropoff:
-        return dropoff_msg, 0.0, True
+        return dropoff_msg
 
     boxes = results[0].boxes
     names = results[0].names
@@ -92,40 +89,37 @@ def analyze_navigation(results, cv_image):
                 else:
                     distance_band, hazard = "over 2 meters", "INFO"
 
-                pan_val = ((x_center / FRAME_WIDTH) * 2.0) - 1.0
                 pos_text = "on your left" if x_center < 105 else ("on your right" if x_center > 215 else "directly ahead")
-
                 obstacles.append({
                     "label": label, "pos_text": pos_text, "distance": distance_band,
-                    "hazard": hazard, "pan": pan_val, "height_ratio": height_ratio
+                    "hazard": hazard, "height_ratio": height_ratio
                 })
 
     if obstacles:
         obstacles.sort(key=lambda item: item["height_ratio"], reverse=True)
         primary = obstacles[0]
         if primary["hazard"] == "CRITICAL":
-            return f"Stop! {primary['label']} {primary['pos_text']}, {primary['distance']}.", primary["pan"], True
+            return f"Stop! {primary['label']} {primary['pos_text']}, {primary['distance']}."
 
-    steering_advice = compute_walkable_corridor(results, cv_image)
-    if steering_advice:
-        return steering_advice, 0.0, False
+    steering = compute_walkable_corridor(results, cv_image)
+    if steering:
+        return steering
 
     if obstacles:
         primary = obstacles[0]
-        return f"{primary['label']} {primary['pos_text']}, {primary['distance']}.", primary["pan"], True
+        return f"{primary['label']} {primary['pos_text']}, {primary['distance']}."
 
-    return "Path clear straight ahead.", 0.0, False
+    return "Path clear straight ahead."
 
 def identify_currency(cv_img):
-    hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
-    h_mean, s_mean = np.mean(hsv[:, :, 0]), np.mean(hsv[:, :, 1])
-
     ocr_results = ocr_reader.readtext(cv_img)
     text_corpus = " ".join([entry[1].strip() for entry in ocr_results])
     for denom in ["500", "200", "100", "50", "20", "10"]:
         if denom in text_corpus or f"₹{denom}" in text_corpus:
             return f"{denom} Rupees note detected."
 
+    hsv = cv2.cvtColor(cv_img, cv2.COLOR_BGR2HSV)
+    h_mean, s_mean = np.mean(hsv[:, :, 0]), np.mean(hsv[:, :, 1])
     if s_mean > 35:
         if 15 <= h_mean <= 30: return "Likely 200 Rupees note."
         elif 80 <= h_mean <= 100: return "Likely 50 Rupees note."
@@ -133,32 +127,40 @@ def identify_currency(cv_img):
         elif 5 <= h_mean <= 18: return "Likely 10 or 20 Rupees note."
     elif 30 <= h_mean <= 75 and s_mean < 40:
         return "Likely 500 Rupees note."
-    return "No clear banknote detected. Hold closer."
+    return "No clear banknote detected."
 
-@app.post("/process_frame")
-async def process_frame(file: UploadFile = File(...), mode: str = Form(...)):
-    contents = await file.read()
-    nparr = np.frombuffer(contents, np.uint8)
-    cv_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+# UI Layout
+st.title("EchoSight Assistive Vision")
+mode = st.radio("Select Operating Mode:", ["🧭 Navigation", "📖 Text Reader (OCR)", "💵 Currency Identifier"], horizontal=True)
 
-    if mode == "NAVIGATION":
-        pil_img = Image.fromarray(cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB))
-        results = seg_model(pil_img, verbose=False)
-        alert_text, pan_val, beep = analyze_navigation(results, cv_img)
-        return JSONResponse({"alert": alert_text, "pan": pan_val, "beep": beep})
+img_file = st.camera_input("Capture live view")
 
-    elif mode == "OCR":
+if img_file is not None:
+    image = Image.open(img_file)
+    cv_img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+    if mode == "🧭 Navigation":
+        results = seg_model(image, verbose=False)
+        alert = analyze_navigation(results, cv_img)
+        st.success(f"**Guidance:** {alert}")
+        alert_to_speak = alert
+
+    elif mode == "📖 Text Reader (OCR)":
         gray = cv2.cvtColor(cv_img, cv2.COLOR_BGR2GRAY)
-        resized = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(resized)
-        ocr_results = ocr_reader.readtext(clahe)
+        ocr_results = ocr_reader.readtext(gray)
         extracted = [e[1].strip() for e in ocr_results if e[2] > 0.25 and len(e[1].strip()) > 1]
-        msg = f"Text reads: {' '.join(extracted)}" if extracted else "No text detected."
-        return JSONResponse({"alert": msg, "pan": 0.0, "beep": False})
+        text_out = " ".join(extracted) if extracted else "No clear text found."
+        st.info(f"**Extracted Text:** {text_out}")
+        alert_to_speak = text_out
 
-    elif mode == "CURRENCY":
-        cash_msg = identify_currency(cv_img)
-        return JSONResponse({"alert": cash_msg, "pan": 0.0, "beep": False})
+    elif mode == "💵 Currency Identifier":
+        currency_alert = identify_currency(cv_img)
+        st.warning(f"**Banknote Result:** {currency_alert}")
+        alert_to_speak = currency_alert
 
-# Mount the static frontend directory to serve the webpage
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+    st.components.v1.html(f"""
+        <script>
+            const utterance = new SpeechSynthesisUtterance("{alert_to_speak}");
+            window.speechSynthesis.speak(utterance);
+        </script>
+    """, height=0)
